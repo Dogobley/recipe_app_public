@@ -1,0 +1,63 @@
+name: Build and push
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    # Runs on this machine so it can push to the local registry at
+    # localhost:5000 (a GitHub-hosted runner cannot reach it).
+    runs-on: self-hosted
+    outputs:
+      image_tag: ${{ steps.image.outputs.tag }}
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Compute image tag
+        id: image
+        shell: powershell
+        run: |
+          $tag = (Get-Date).ToUniversalTime().ToString("yyyyMMdd-HHmmss") + "-" + $env:GITHUB_SHA.Substring(0,7)
+          Add-Content -Path $env:GITHUB_OUTPUT -Value "tag=$tag"
+
+      - name: Log in to the registry
+        shell: powershell
+        env:
+          IMAGE_REPOSITORY: ${{ vars.IMAGE_REPOSITORY }}
+          REGISTRY_USERNAME: ${{ secrets.REGISTRY_USERNAME }}
+          REGISTRY_PASSWORD: ${{ secrets.REGISTRY_PASSWORD }}
+        run: |
+          if ($env:REGISTRY_USERNAME) {
+            $registry = ($env:IMAGE_REPOSITORY -split '/')[0]
+            $env:REGISTRY_PASSWORD | docker login $registry --username $env:REGISTRY_USERNAME --password-stdin
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+
+      - name: Build, tag, and push image
+        shell: powershell
+        env:
+          IMAGE_REPOSITORY: ${{ vars.IMAGE_REPOSITORY }}
+          IMAGE_TAG: ${{ steps.image.outputs.tag }}
+        run: |
+          $image = $env:IMAGE_REPOSITORY
+          $tag = $env:IMAGE_TAG
+          docker build --build-arg "APP_VERSION=${tag}" -t "${image}:${tag}" -t "${image}:dev" .
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          docker push "${image}:${tag}"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          docker push "${image}:dev"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+  deploy-dev:
+    needs: build
+    uses: ./.github/workflows/deploy.yml
+    with:
+      environment: dev
+      image_tag: ${{ needs.build.outputs.image_tag }}
+    secrets: inherit

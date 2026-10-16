@@ -1,0 +1,1 @@
+"""Recipe cost calculator application."""

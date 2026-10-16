@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+
+{% block title %}{{ page_title }} | Ingredients | Recipe Cost Calculator{% endblock %}
+
+{% block content %}
+  <div class="d-flex flex-wrap justify-content-between align-items-center gap-3 mb-4">
+    <h1 class="mb-0">{{ page_title }}</h1>
+    <a class="btn btn-outline-secondary" href="{% if ingredient %}{% url 'ingredient-detail' ingredient.pk %}{% else %}{% url 'ingredient-list' %}{% endif %}">Cancel</a>
+  </div>
+
+  <form method="post" novalidate>
+    {% csrf_token %}
+    {% include "includes/form_errors.html" with form=form %}
+
+    <div class="row g-3">
+      {% for field in form %}
+        <div class="col-12{% if field.name == 'package_weight' or field.name == 'package_weight_unit' or field.name == 'package_price' %} col-md-4{% endif %}">
+          <label class="form-label" for="{{ field.id_for_label }}">{{ field.label }} <span aria-hidden="true">*</span><span class="visually-hidden"> (required)</span></label>
+          {{ field.as_widget }}
+          {% include "includes/form_errors.html" with form=form field=field %}
+        </div>
+      {% endfor %}
+    </div>
+
+    <div class="mt-4 d-flex flex-wrap gap-2">
+      <button class="btn btn-primary" type="submit">{{ submit_label }}</button>
+      <a class="btn btn-outline-secondary" href="{% if ingredient %}{% url 'ingredient-detail' ingredient.pk %}{% else %}{% url 'ingredient-list' %}{% endif %}">Cancel</a>
+    </div>
+  </form>
+{% endblock %}

@@ -1,0 +1,130 @@
+name: Promote dev to production
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: Confirm that you want to promote this release to production
+        required: true
+        type: boolean
+        default: false
+      image_tag:
+        description: Release tag to promote (defaults to the release the dev container is running)
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+
+jobs:
+  promote:
+    # Runs on this machine so it can pull/tag/push against localhost:5000.
+    runs-on: self-hosted
+    outputs:
+      release_tag: ${{ steps.release.outputs.release_tag }}
+    steps:
+      - name: Require confirmation
+        shell: powershell
+        env:
+          CONFIRM: ${{ inputs.confirm }}
+        run: |
+          if ($env:CONFIRM -ne 'true') {
+            Write-Host '::error::Promotion not confirmed. Re-run the workflow with the confirm checkbox ticked.'
+            exit 1
+          }
+
+      - name: Log in to the registry
+        shell: powershell
+        env:
+          IMAGE_REPOSITORY: ${{ vars.IMAGE_REPOSITORY }}
+          REGISTRY_USERNAME: ${{ secrets.REGISTRY_USERNAME }}
+          REGISTRY_PASSWORD: ${{ secrets.REGISTRY_PASSWORD }}
+        run: |
+          if ($env:REGISTRY_USERNAME) {
+            $registry = ($env:IMAGE_REPOSITORY -split '/')[0]
+            $env:REGISTRY_PASSWORD | docker login $registry --username $env:REGISTRY_USERNAME --password-stdin
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+
+      # The release is the tag the running dev container reports in
+      # APP_VERSION, not whatever the mutable `dev` registry tag points to, so
+      # a newer build that failed its health check is never promoted.
+      - name: Resolve the release to promote
+        id: release
+        shell: powershell
+        env:
+          IMAGE_TAG: ${{ inputs.image_tag }}
+          DEPLOY_PATH: ${{ vars.DEPLOY_PATH }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          $releaseTag = "$env:IMAGE_TAG".Trim()
+          if ($releaseTag) {
+            Write-Host "Using the release tag given: $releaseTag"
+          } else {
+            $deployPath = $env:DEPLOY_PATH.Trim().Trim('"', "'", [char]0x201C, [char]0x201D)
+            Set-Location $deployPath
+
+            # Collect all output before picking the first ID: piping a native
+            # command into Select-Object -First stops it early in Windows
+            # PowerShell 5.1, which leaves $LASTEXITCODE at -1.
+            $ids = @(docker compose --env-file .env ps -q web)
+            if ($LASTEXITCODE -ne 0) {
+              Write-Host "::error::docker compose ps failed (exit code $LASTEXITCODE), so the dev release cannot be read. Production is unchanged."
+              exit 1
+            }
+            $container = $ids | Where-Object { "$_".Trim() } | Select-Object -First 1
+            if (-not $container) {
+              Write-Host '::error::The dev web container is not running, so there is no dev release to promote. Production is unchanged.'
+              exit 1
+            }
+
+            $health = docker inspect --format '{{.State.Health.Status}}' $container
+            if ($LASTEXITCODE -ne 0 -or "$health".Trim() -ne 'healthy') {
+              Write-Host "::error::The dev web container is not healthy (status: $health), so there is no dev release to promote. Production is unchanged."
+              exit 1
+            }
+
+            $envLines = docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' $container
+            $appVersion = $envLines | Where-Object { $_ -like 'APP_VERSION=*' } | Select-Object -First 1
+            $releaseTag = "$appVersion".Trim() -replace '^APP_VERSION=', ''
+            Write-Host "The dev container reports APP_VERSION=$releaseTag"
+          }
+
+          if ($releaseTag -notmatch '^\d{8}-\d{6}-([0-9a-f]{7,40})$') {
+            Write-Host "::error::A release tag (YYYYMMDD-HHMMSS-shortsha) is required; got '$releaseTag'. Production is unchanged."
+            exit 1
+          }
+          $commit = $Matches[1]
+
+          Add-Content -Path $env:GITHUB_OUTPUT -Value "release_tag=$releaseTag"
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "Promoting release ``$releaseTag`` (commit ``$commit``) to production."
+          Write-Host "Release: $releaseTag (commit $commit)"
+
+      - name: Tag the release as the next prod image
+        shell: powershell
+        env:
+          IMAGE_REPOSITORY: ${{ vars.IMAGE_REPOSITORY }}
+          RELEASE_TAG: ${{ steps.release.outputs.release_tag }}
+        run: |
+          $image = $env:IMAGE_REPOSITORY
+          $sourceTag = $env:RELEASE_TAG
+          # Fails here, before anything is retagged, when the tag is not in the registry.
+          docker pull "${image}:${sourceTag}"
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "::error::Release '$sourceTag' was not found in the registry. Production is unchanged."
+            exit 1
+          }
+          docker tag "${image}:${sourceTag}" "${image}:prod"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          docker push "${image}:prod"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Write-Host "Promoted '$sourceTag' to 'prod'."
+
+  deploy-prod:
+    needs: promote
+    uses: ./.github/workflows/deploy.yml
+    with:
+      environment: prod
+      image_tag: ${{ needs.promote.outputs.release_tag }}
+    secrets: inherit

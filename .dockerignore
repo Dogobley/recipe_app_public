@@ -1,0 +1,13 @@
+# Keep local junk and secrets out of the build context and the image.
+.git
+.gitignore
+.venv
+__pycache__
+*.py[cod]
+.pytest_cache
+db.sqlite3
+staticfiles/
+.env
+.env.prod
+deploy/
+actions-runner/

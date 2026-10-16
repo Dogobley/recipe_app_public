@@ -1,0 +1,119 @@
+name: Deploy
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Environment to deploy
+        required: true
+        type: choice
+        options: [dev, prod]
+        default: dev
+      image_tag:
+        description: Release tag to deploy, e.g. 20261014-191754-9bdd779 (required)
+        required: true
+  workflow_call:
+    inputs:
+      environment:
+        required: true
+        type: string
+      image_tag:
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    # Runs on this machine via a self-hosted runner, so `docker compose` acts
+    # on the local Docker daemon and no SSH is required.
+    runs-on: self-hosted
+    steps:
+      # Code and settings must come from the same commit: the release tag
+      # (YYYYMMDD-HHMMSS-shortsha) names the commit that built the image, and
+      # that commit's compose.yaml is the one deployed. Full history is fetched
+      # so any release's short SHA can be resolved.
+      - name: Check out the repository history
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check out the commit that built the release
+        shell: powershell
+        env:
+          RELEASE_TAG: ${{ inputs.image_tag }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          $releaseTag = "$env:RELEASE_TAG".Trim()
+          if ($releaseTag -notmatch '^\d{8}-\d{6}-([0-9a-f]{7,40})$') {
+            Write-Host "::error::A release tag (YYYYMMDD-HHMMSS-shortsha, for example 20261014-191754-9bdd779) is required; got '$releaseTag'. Tags such as dev, prod or latest are not releases."
+            exit 1
+          }
+          $shortSha = $Matches[1]
+
+          $commit = git rev-parse --verify --quiet "${shortSha}^{commit}"
+          if ($LASTEXITCODE -ne 0 -or -not $commit) {
+            Write-Host "::error::A release tag is required: '$releaseTag' does not end in a commit of this repository ('$shortSha' not found)."
+            exit 1
+          }
+
+          git checkout --detach $commit
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+          Write-Host "Release tag: $releaseTag"
+          Write-Host "Commit checked out: $commit"
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "Deploying release ``$releaseTag`` (commit ``$commit``) to ``${{ inputs.environment }}``."
+
+      - name: Pull image and serve
+        shell: powershell
+        env:
+          ENVIRONMENT: ${{ inputs.environment }}
+          IMAGE_TAG: ${{ inputs.image_tag }}
+          IMAGE_REPOSITORY: ${{ vars.IMAGE_REPOSITORY }}
+          DEPLOY_PATH: ${{ vars.DEPLOY_PATH }}
+          REGISTRY_USERNAME: ${{ secrets.REGISTRY_USERNAME }}
+          REGISTRY_PASSWORD: ${{ secrets.REGISTRY_PASSWORD }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          if ($env:ENVIRONMENT -eq 'prod') { $envFile = '.env.prod' } else { $envFile = '.env' }
+          $imageTag = "$env:IMAGE_TAG".Trim()
+
+          # Strip any accidental wrapping quotes/whitespace from the variable.
+          $deployPath = $env:DEPLOY_PATH.Trim().Trim('"', "'", [char]0x201C, [char]0x201D)
+
+          New-Item -ItemType Directory -Force -Path $deployPath | Out-Null
+          Copy-Item -Path compose.yaml -Destination (Join-Path $deployPath 'compose.yaml') -Force
+
+          if ($env:REGISTRY_USERNAME) {
+            $registry = ($env:IMAGE_REPOSITORY -split '/')[0]
+            $env:REGISTRY_PASSWORD | docker login $registry --username $env:REGISTRY_USERNAME --password-stdin
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+
+          Set-Location $deployPath
+          $env:IMAGE_TAG = $imageTag
+
+          docker compose --env-file $envFile pull web
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+          docker compose --env-file $envFile up -d --no-build
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+          for ($i = 1; $i -le 30; $i++) {
+            $json = docker compose --env-file $envFile ps --format json 2>$null
+            if ($LASTEXITCODE -eq 0 -and $json) {
+              $web = $json | ConvertFrom-Json | Where-Object { $_.Service -eq 'web' }
+              if ($web -and $web.Health -eq 'healthy') {
+                Write-Host "Deployment healthy after $i attempt(s)."
+                exit 0
+              }
+            }
+            Start-Sleep -Seconds 5
+          }
+
+          Write-Host 'Health check timed out.'
+          docker compose --env-file $envFile logs --tail 80 web
+          exit 1

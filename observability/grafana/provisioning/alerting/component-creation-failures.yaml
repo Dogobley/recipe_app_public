@@ -1,0 +1,85 @@
+apiVersion: 1
+
+# Grafana-managed alert rule provisioned from this repository, so a freshly
+# created Grafana volume (after `down -v` and `up`) comes up with it in place.
+# No contact point is configured: the alert is read from Grafana's alert API.
+groups:
+  - orgId: 1
+    name: component-creation
+    folder: Recipe Calculator
+    interval: 1m
+    rules:
+      - uid: component-creation-failures
+        title: Repeated recipe and ingredient creation failures
+        # C is the threshold expression below.
+        condition: C
+        data:
+          # A: failures in the last 10 minutes per deployment (environment and
+          # version pair), recipes and ingredients added together. increase()
+          # treats a counter that drops (worker or container restart) as a
+          # reset, so a restart never looks like a burst of failures.
+          - refId: A
+            relativeTimeRange:
+              from: 600
+              to: 0
+            datasourceUid: prometheus
+            model:
+              refId: A
+              datasource:
+                type: prometheus
+                uid: prometheus
+              editorMode: code
+              expr: >-
+                sum by (service_name, deployment_environment, service_version)
+                (increase(component_creation_failures_total[10m]))
+              instant: true
+              range: false
+              intervalMs: 60000
+              maxDataPoints: 43200
+          # C: fire at 3 or more failures in those 10 minutes.
+          - refId: C
+            relativeTimeRange:
+              from: 0
+              to: 0
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: A
+              datasource:
+                type: __expr__
+                uid: __expr__
+              conditions:
+                - evaluator:
+                    type: gte
+                    params:
+                      - 3
+        # No failure series yet, or Prometheus unreachable, is not an outage of
+        # the create flow: keep the rule Normal.
+        noDataState: OK
+        execErrState: OK
+        for: 1m
+        # Grafana expands $NAME in provisioning files as an environment
+        # variable in these label values, so "$$" keeps a literal "$labels".
+        labels:
+          service: '{{ $$labels.service_name }}'
+          environment: '{{ $$labels.deployment_environment }}'
+          version: '{{ $$labels.service_version }}'
+          owner: recipe-calculator-oncall
+        annotations:
+          summary: >-
+            {{ printf "%.0f" $values.A.Value }} recipe/ingredient creation
+            failures in the last 10 minutes on {{ $labels.deployment_environment }}
+            version {{ $labels.service_version }}
+          description: >-
+            Users of {{ $labels.service_name }} in {{ $labels.deployment_environment }}
+            (version {{ $labels.service_version }}) cannot save new recipes or
+            ingredients: create requests keep ending in a server error (unhandled
+            exception or 5xx), so their work is not being stored.
+          dashboard_url: >-
+            http://localhost:3000/d/recipe-business-metrics?var-environment={{ $labels.deployment_environment }}&var-version={{ $labels.service_version }}&from=now-1h&to=now
+          runbook: >-
+            Check the deployment's web logs for the failing create requests
+            (docker compose logs web for that environment), then confirm its
+            database container is running and healthy.
+        isPaused: false

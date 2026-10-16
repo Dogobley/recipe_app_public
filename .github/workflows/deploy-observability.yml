@@ -1,0 +1,345 @@
+name: Deploy observability
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'observability/**'
+
+permissions:
+  contents: read
+
+# Never run two deployments of the stack at the same time.
+concurrency:
+  group: deploy-observability
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    # Runs on this machine via the self-hosted runner, so `docker compose` acts
+    # on the local Docker daemon. The stack is its own Compose project
+    # (`observability`); this workflow never touches the dev or prod
+    # application containers.
+    runs-on: self-hosted
+    steps:
+      - name: Check out the commit being deployed
+        uses: actions/checkout@v4
+
+      # Everything below that can fail on configuration runs before any file in
+      # the deploy folder or any container changes.
+      - name: Check the deploy folder and the Grafana credentials
+        shell: powershell
+        env:
+          OBSERVABILITY_PATH: ${{ vars.OBSERVABILITY_PATH }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          # Strip any accidental wrapping quotes/whitespace from the variable.
+          $deployPath = "$env:OBSERVABILITY_PATH".Trim().Trim('"', "'", [char]0x201C, [char]0x201D)
+          if (-not $deployPath) {
+            Write-Host "::error::The repository variable OBSERVABILITY_PATH is not set. Set it to the folder the observability stack is deployed to (outside actions-runner/_work)."
+            exit 1
+          }
+          $deployPath = [System.IO.Path]::GetFullPath($deployPath)
+          if ($deployPath -like '*\actions-runner\_work*' -or $deployPath -like "$env:GITHUB_WORKSPACE*") {
+            Write-Host "::error::OBSERVABILITY_PATH ($deployPath) is inside the runner's work directory, which the runner cleans. Choose a folder outside actions-runner/_work."
+            exit 1
+          }
+
+          $envFile = Join-Path $deployPath '.env'
+          if (-not (Test-Path -LiteralPath $envFile -PathType Leaf)) {
+            Write-Host "::error::The Grafana env file $envFile is missing. Copy observability/env.example to it and set GRAFANA_ADMIN_USER and GRAFANA_ADMIN_PASSWORD. No container was changed."
+            exit 1
+          }
+
+          # Compose reads .env values its own way: in an unquoted or
+          # double-quoted value `$name` is a variable (so `pa$word` silently
+          # becomes `pa`), and in an unquoted value ` #` starts a comment. Catch
+          # both before they change the password. The value is read in memory
+          # and never printed.
+          $passwordLine = [System.IO.File]::ReadAllLines($envFile) | Where-Object { $_ -match '^\s*(export\s+)?GRAFANA_ADMIN_PASSWORD\s*=' } | Select-Object -Last 1
+          if ($passwordLine) {
+            $rawValue = ($passwordLine -split '=', 2)[1].Trim()
+            if (-not $rawValue.StartsWith("'") -and ($rawValue -replace '\$\$', '') -match '\$') {
+              Write-Host ('::error::GRAFANA_ADMIN_PASSWORD in ' + $envFile + ' contains a $ that Compose would treat as a variable reference. Write each $ as $$, or wrap the whole value in single quotes. No container was changed.')
+              exit 1
+            }
+            if (-not ($rawValue.StartsWith("'") -or $rawValue.StartsWith('"')) -and $rawValue -match '\s#') {
+              Write-Host ('::error::GRAFANA_ADMIN_PASSWORD in ' + $envFile + ' contains a space followed by #, which Compose treats as the start of a comment. Wrap the whole value in single quotes. No container was changed.')
+              exit 1
+            }
+          }
+
+          # Let Compose resolve the variables exactly as `up` will. The output
+          # holds the password, so it is parsed in memory and never printed.
+          $json = docker compose --env-file $envFile -f observability/compose.yaml config --format json
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "::error::The observability Compose configuration is invalid or the Grafana env file $envFile lacks GRAFANA_ADMIN_USER or GRAFANA_ADMIN_PASSWORD. No container was changed."
+            exit 1
+          }
+          $grafanaEnv = (($json -join "`n") | ConvertFrom-Json).services.grafana.environment
+          $user = "$($grafanaEnv.GF_SECURITY_ADMIN_USER)"
+          # `config` writes every literal $ as $$; undo that to get the real value.
+          $password = "$($grafanaEnv.GF_SECURITY_ADMIN_PASSWORD)".Replace('$$', '$')
+          if ($password) { Write-Host "::add-mask::$password" }
+
+          if (-not $user.Trim()) {
+            Write-Host "::error::GRAFANA_ADMIN_USER is empty in $envFile. No container was changed."
+            exit 1
+          }
+          if (-not $password.Trim()) {
+            Write-Host "::error::GRAFANA_ADMIN_PASSWORD is missing or empty in $envFile. No container was changed."
+            exit 1
+          }
+          if ($password -eq 'admin' -or $password -like 'replace-with-*') {
+            Write-Host "::error::GRAFANA_ADMIN_PASSWORD in $envFile is the default 'admin' or the example placeholder. Set a real password. No container was changed."
+            exit 1
+          }
+
+          Add-Content -Path $env:GITHUB_ENV -Value "DEPLOY_PATH=$deployPath"
+          Write-Host "Deploy folder: $deployPath"
+          Write-Host "Grafana env file found with GRAFANA_ADMIN_USER and GRAFANA_ADMIN_PASSWORD set."
+
+      # Only files whose content differs are written, so an unchanged
+      # redeploy leaves every bind-mounted config file untouched. The
+      # services whose config changed are restarted after `up` (Compose does
+      # not recreate a container when only a bind-mounted file changes).
+      - name: Copy the stack's files to the deploy folder
+        id: copy
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          $source = (Resolve-Path 'observability').Path
+          New-Item -ItemType Directory -Force -Path $env:DEPLOY_PATH | Out-Null
+
+          $changed = New-Object System.Collections.Generic.List[string]
+          # -Name yields paths relative to the folder, e.g. grafana\provisioning\...
+          foreach ($relative in @(Get-ChildItem -LiteralPath $source -Recurse -File -Name)) {
+            $sourceFile = Join-Path $source $relative
+            $target = Join-Path $env:DEPLOY_PATH $relative
+            $same = $false
+            if (Test-Path -LiteralPath $target -PathType Leaf) {
+              $same = (Get-FileHash -LiteralPath $sourceFile).Hash -eq (Get-FileHash -LiteralPath $target).Hash
+            }
+            if (-not $same) {
+              New-Item -ItemType Directory -Force -Path (Split-Path -Parent $target) | Out-Null
+              Copy-Item -LiteralPath $sourceFile -Destination $target -Force
+              $changed.Add($relative)
+              Write-Host "Updated $relative"
+            }
+          }
+
+          # Mirror the Grafana provisioning folder, so a dashboard or rule
+          # removed from the repository is removed from Grafana too.
+          $targetGrafana = Join-Path $env:DEPLOY_PATH 'grafana'
+          if (Test-Path -LiteralPath $targetGrafana) {
+            foreach ($name in @(Get-ChildItem -LiteralPath $targetGrafana -Recurse -File -Name)) {
+              $relative = Join-Path 'grafana' $name
+              if (-not (Test-Path -LiteralPath (Join-Path $source $relative) -PathType Leaf)) {
+                Remove-Item -LiteralPath (Join-Path $env:DEPLOY_PATH $relative) -Force
+                $changed.Add($relative)
+                Write-Host "Removed $relative"
+              }
+            }
+          }
+
+          $services = New-Object System.Collections.Generic.List[string]
+          foreach ($relative in $changed) {
+            $service = switch -Wildcard ($relative) {
+              'otel-collector-config.yaml' { 'collector' }
+              'prometheus.yml' { 'prometheus' }
+              'loki.yaml' { 'loki' }
+              'tempo.yaml' { 'tempo' }
+              'grafana\*' { 'grafana' }
+              default { $null }
+            }
+            if ($service -and -not $services.Contains($service)) { $services.Add($service) }
+          }
+
+          if ($changed.Count -eq 0) { Write-Host 'The deploy folder is already up to date.' }
+          Add-Content -Path $env:GITHUB_OUTPUT -Value "restart_services=$($services -join ' ')"
+
+      - name: Start the stack
+        shell: powershell
+        env:
+          RESTART_SERVICES: ${{ steps.copy.outputs.restart_services }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Set-Location $env:DEPLOY_PATH
+
+          $allServices = @('collector', 'prometheus', 'loki', 'tempo', 'grafana')
+          $before = @{}
+          foreach ($service in $allServices) {
+            $ids = @(docker compose --project-name observability ps -a -q $service)
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            $before[$service] = ($ids | Where-Object { "$_".Trim() }) -join ','
+          }
+
+          # The project name is fixed, so the existing volumes are reused.
+          # `up -d` only recreates a container whose Compose configuration
+          # changed; an unchanged redeploy leaves every container running.
+          docker compose --project-name observability up -d
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+          # A changed config file is bind-mounted, so the running container
+          # needs a restart to read it, unless `up` just created it anew.
+          foreach ($service in ("$env:RESTART_SERVICES" -split ' ' | Where-Object { $_ })) {
+            $ids = @(docker compose --project-name observability ps -a -q $service)
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            $after = ($ids | Where-Object { "$_".Trim() }) -join ','
+            if ($before[$service] -and $after -eq $before[$service]) {
+              Write-Host "Restarting $service to load its changed configuration."
+              docker compose --project-name observability restart $service
+              if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            }
+          }
+
+          docker compose --project-name observability ps
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Wait for every service to be ready
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $ProgressPreference = 'SilentlyContinue'
+          Set-Location $env:DEPLOY_PATH
+
+          $checks = @(
+            @{ Name = 'Prometheus'; Service = 'prometheus'; Url = 'http://localhost:9090/-/ready' },
+            @{ Name = 'Loki'; Service = 'loki'; Url = 'http://localhost:3100/ready' },
+            @{ Name = 'Tempo'; Service = 'tempo'; Url = 'http://localhost:3200/ready' },
+            @{ Name = 'Grafana'; Service = 'grafana'; Url = 'http://localhost:3000/api/health' },
+            @{ Name = 'OpenTelemetry Collector'; Service = 'collector'; Url = 'http://localhost:8888/metrics' }
+          )
+
+          $deadline = (Get-Date).AddMinutes(5)
+          $notReady = @()
+          foreach ($check in $checks) {
+            $ready = $false
+            while ($true) {
+              try {
+                $response = Invoke-WebRequest -Uri $check.Url -UseBasicParsing -TimeoutSec 5
+                if ($response.StatusCode -eq 200) { $ready = $true }
+              } catch {
+                $ready = $false
+              }
+              if ($ready -or (Get-Date) -gt $deadline) { break }
+              Start-Sleep -Seconds 5
+            }
+            if ($ready) {
+              Write-Host "$($check.Name) is ready ($($check.Url))."
+            } else {
+              $notReady += $check
+            }
+          }
+
+          if ($notReady.Count -gt 0) {
+            foreach ($check in $notReady) {
+              Write-Host "::error::$($check.Name) is not ready: $($check.Url) did not answer 200."
+              docker compose --project-name observability logs --tail 50 $check.Service
+            }
+            exit 1
+          }
+          Write-Host 'Every observability service is ready.'
+
+      # GF_SECURITY_ADMIN_PASSWORD only applies when Grafana creates a new
+      # database, so the password from .env is also applied to the existing
+      # volume. It is never printed and never on a command line. It is written
+      # to the CLI's stdin as exact UTF-8 bytes. With the console code page at
+      # 65001 (the runner runs `chcp 65001`), Windows PowerShell's `|` into a
+      # native command, and .NET's redirected stdin, both prepend a UTF-8 BOM,
+      # which made Grafana store BOM + password on the first live run.
+      - name: Apply the Grafana admin password
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $ProgressPreference = 'SilentlyContinue'
+          Set-Location $env:DEPLOY_PATH
+
+          # Runs a native command with exact stdin bytes and decodes its output
+          # as UTF-8, independent of the console code page.
+          function Invoke-Native([string]$FilePath, [string]$Arguments, [byte[]]$InputBytes) {
+            $utf8 = New-Object System.Text.UTF8Encoding $false
+            $startInfo = New-Object System.Diagnostics.ProcessStartInfo
+            $startInfo.FileName = $FilePath
+            $startInfo.Arguments = $Arguments
+            $startInfo.WorkingDirectory = (Get-Location).Path
+            $startInfo.UseShellExecute = $false
+            $startInfo.RedirectStandardInput = $true
+            $startInfo.RedirectStandardOutput = $true
+            $startInfo.RedirectStandardError = $true
+            $startInfo.StandardOutputEncoding = $utf8
+            $startInfo.StandardErrorEncoding = $utf8
+            # .NET writes Console.InputEncoding's preamble (a BOM under code
+            # page 65001) to a redirected stdin, so use BOM-less UTF-8 while
+            # the process starts.
+            $consoleInput = [Console]::InputEncoding
+            [Console]::InputEncoding = $utf8
+            try {
+              $process = [System.Diagnostics.Process]::Start($startInfo)
+            } finally {
+              [Console]::InputEncoding = $consoleInput
+            }
+            $stdout = $process.StandardOutput.ReadToEndAsync()
+            $stderr = $process.StandardError.ReadToEndAsync()
+            $stdin = $process.StandardInput.BaseStream
+            if ($InputBytes) { $stdin.Write($InputBytes, 0, $InputBytes.Length) }
+            $stdin.Flush()
+            $stdin.Close()
+            $process.WaitForExit()
+            return [pscustomobject]@{ ExitCode = $process.ExitCode; StdOut = $stdout.Result; StdErr = $stderr.Result }
+          }
+
+          $config = Invoke-Native 'docker' 'compose --project-name observability config --format json' $null
+          if ($config.ExitCode -ne 0) {
+            Write-Host $config.StdErr
+            Write-Host '::error::Could not read the observability Compose configuration.'
+            exit 1
+          }
+          $grafanaEnv = ($config.StdOut | ConvertFrom-Json).services.grafana.environment
+          $user = "$($grafanaEnv.GF_SECURITY_ADMIN_USER)"
+          # `config` writes every literal $ as $$; undo that to get the exact
+          # value Grafana receives in GF_SECURITY_ADMIN_PASSWORD.
+          $password = "$($grafanaEnv.GF_SECURITY_ADMIN_PASSWORD)".Replace('$$', '$')
+          Write-Host "::add-mask::$password"
+
+          $passwordBytes = (New-Object System.Text.UTF8Encoding $false).GetBytes($password + "`n")
+          $reset = Invoke-Native 'docker' 'compose --project-name observability exec -T grafana grafana cli admin reset-admin-password --password-from-stdin' $passwordBytes
+          if ($reset.ExitCode -ne 0) {
+            Write-Host $reset.StdErr
+            Write-Host '::error::Could not apply the Grafana admin password from .env (see the Grafana CLI error above, for example the password policy).'
+            exit 1
+          }
+          Write-Host 'Grafana CLI applied the admin password from .env.'
+
+          $pair = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes("${user}:${password}"))
+          $checkedAt = (Get-Date).ToUniversalTime().AddSeconds(-5).ToString('yyyy-MM-ddTHH:mm:ssZ')
+          try {
+            Invoke-WebRequest -Uri 'http://localhost:3000/api/user' -UseBasicParsing -TimeoutSec 10 -Headers @{ Authorization = "Basic $pair" } | Out-Null
+          } catch {
+            $status = 0
+            if ($_.Exception.Response) { $status = [int]$_.Exception.Response.StatusCode }
+            if ($status -ne 401) {
+              Write-Host "::error::Could not check the Grafana admin login at http://localhost:3000/api/user: $($_.Exception.Message)"
+              exit 1
+            }
+            # Grafana answers 401 for every login failure; only its log line
+            # for this request tells a blocked login, an unknown user and a
+            # wrong password apart.
+            $logs = Invoke-Native 'docker' "compose --project-name observability logs --since $checkedAt --no-log-prefix grafana" $null
+            $recent = "$(@("$($logs.StdOut)`n$($logs.StdErr)" -split "`n" | Where-Object { $_ -match 'path=/api/user' -and $_ -match 'status=401' })[-1])"
+            if ($recent -match 'too many consecutive incorrect login attempts|temporarily blocked') {
+              Write-Host "::error::Grafana temporarily blocked logins for '$user' after repeated failed attempts. Wait 5 minutes and run the workflow again."
+            } elseif ($recent -match 'identity\.not-found') {
+              Write-Host "::error::Grafana has no user named '$user' (GRAFANA_ADMIN_USER in .env). The user name only applies to a new Grafana volume; set GRAFANA_ADMIN_USER to the existing admin login name (normally admin)."
+            } elseif ($recent -match 'password-auth\.invalid') {
+              Write-Host "::error::Grafana has the user '$user' but rejected the password just applied from .env (GRAFANA_ADMIN_PASSWORD). The password reset did not store the exact value; nothing about the user name is wrong."
+            } else {
+              Write-Host "::error::Grafana rejected the admin login '$user' with the password from .env (HTTP 401)."
+            }
+            exit 1
+          }
+          Write-Host "Grafana accepts the admin user '$user' with the password from .env."
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "Observability stack deployed from commit ``$env:GITHUB_SHA`` to ``$env:DEPLOY_PATH``; every service is ready."

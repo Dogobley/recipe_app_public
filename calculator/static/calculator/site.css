@@ -1,0 +1,13 @@
+/* Project-specific additions; Bootstrap supplies the main responsive layout. */
+.navbar .nav-link.active {
+  font-weight: 700;
+  text-decoration: underline;
+  text-underline-offset: 0.25rem;
+}
+
+.navbar .nav-link:focus-visible,
+.navbar-brand:focus-visible,
+.btn-close:focus-visible {
+  outline: 3px solid currentColor;
+  outline-offset: 3px;
+}

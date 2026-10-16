@@ -1,0 +1,6 @@
+# Test-only override: publish the web port on a free loopback port so the
+# integration stack never collides with a deployment already using 8000.
+services:
+  web:
+    ports: !override
+      - "127.0.0.1::8000"

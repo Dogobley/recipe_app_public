@@ -1,0 +1,19 @@
+{% extends "base.html" %}
+
+{% block title %}Delete {{ ingredient.name }} | Ingredients | Recipe Cost Calculator{% endblock %}
+
+{% block content %}
+  <div class="row justify-content-center">
+    <div class="col-lg-8">
+      <h1>Delete ingredient</h1>
+      <div class="alert alert-warning" role="alert">
+        <p class="mb-0">You are about to permanently delete <strong>{{ ingredient.name }}</strong>. This action cannot be undone.</p>
+      </div>
+      <form method="post" class="d-flex flex-wrap gap-2">
+        {% csrf_token %}
+        <button class="btn btn-danger" type="submit">Delete ingredient</button>
+        <a class="btn btn-outline-secondary" href="{% url 'ingredient-detail' ingredient.pk %}">Cancel</a>
+      </form>
+    </div>
+  </div>
+{% endblock %}

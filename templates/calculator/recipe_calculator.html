@@ -1,0 +1,77 @@
+{% extends "base.html" %}
+
+{% load presentation %}
+
+{% block title %}Recipe calculator | Recipe Cost Calculator{% endblock %}
+
+{% block content %}
+  <h1 class="mb-4">Recipe calculator</h1>
+
+  {% if not recipes_available %}
+    <p>No recipes are available to calculate yet.</p>
+    <a class="btn btn-primary mb-3" href="{% url 'recipe-create' %}">Add recipe</a>
+  {% endif %}
+  <form method="post" novalidate>
+    {% csrf_token %}
+    {% include "includes/form_errors.html" with form=form %}
+    <div class="row g-3 align-items-end">
+      <div class="col-md-6">
+        <label class="form-label" for="{{ form.recipe.id_for_label }}">Recipe</label>
+        {{ form.recipe }}
+        {% include "includes/form_errors.html" with form=form field=form.recipe %}
+      </div>
+      <div class="col-md-4">
+        <label class="form-label" for="{{ form.units.id_for_label }}">Units</label>
+        {{ form.units }}
+        {% include "includes/form_errors.html" with form=form field=form.units %}
+      </div>
+      <div class="col-md-2">
+        <button class="btn btn-primary w-100" type="submit"{% if not recipes_available %} disabled{% endif %}>Calculate</button>
+      </div>
+    </div>
+  </form>
+
+  {% if calculation %}
+    <section class="mt-5" aria-labelledby="calculation-result-heading">
+      <h2 id="calculation-result-heading">Calculation for {{ form.cleaned_data.recipe.name }}</h2>
+      <dl class="row">
+        <dt class="col-sm-4">Requested units</dt>
+        <dd class="col-sm-8">{{ form.cleaned_data.units }}</dd>
+        <dt class="col-sm-4">Cost per unit</dt>
+        <dd class="col-sm-8">{{ calculation.cost_per_unit|currency }}</dd>
+        <dt class="col-sm-4">Weight per unit</dt>
+        <dd class="col-sm-8">{{ calculation.weight_per_unit|weight:"g" }}</dd>
+        <dt class="col-sm-4">Total cost</dt>
+        <dd class="col-sm-8">{{ calculation.total_ingredient_cost|currency }}</dd>
+        <dt class="col-sm-4">Total weight</dt>
+        <dd class="col-sm-8">{{ calculation.total_normalized_weight|weight:"g" }}</dd>
+      </dl>
+
+      <h3 class="h4">Ingredients</h3>
+      {% if calculation.ingredient_results %}
+        <div class="table-responsive">
+          <table class="table table-hover align-middle">
+            <thead>
+              <tr>
+                <th scope="col">Ingredient</th>
+                <th scope="col">Adjusted quantity</th>
+                <th scope="col">Cost</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for row in calculation.ingredient_results %}
+                <tr>
+                  <th scope="row">{{ row.ingredient.name }}</th>
+                  <td>{{ row.scaled_quantity|weight:row.unit }}</td>
+                  <td>{{ row.ingredient_cost|currency }}</td>
+                </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      {% else %}
+        <p>This recipe has no ingredients. Total ingredient cost and weight are zero.</p>
+      {% endif %}
+    </section>
+  {% endif %}
+{% endblock %}

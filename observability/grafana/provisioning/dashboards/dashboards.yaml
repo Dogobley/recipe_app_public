@@ -1,0 +1,22 @@
+apiVersion: 1
+
+# Provision dashboards from JSON files that live in this repository, so a
+# freshly created Grafana volume comes up with the business-metrics dashboard
+# already installed.
+#
+# The folder is named by title only, with no folderUid. Alert rule files
+# (alerting/) can only name their folder by title, and Grafana provisions
+# alerting before dashboards. A folderUid here would make a second "Recipe
+# Calculator" folder next to the one the alert rule created. Matching by title
+# makes both providers use the same single folder.
+providers:
+  - name: recipe-calculator
+    orgId: 1
+    folder: Recipe Calculator
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 30
+    allowUiUpdates: false
+    options:
+      path: /etc/grafana/provisioning/dashboards
+      foldersFromFilesStructure: false

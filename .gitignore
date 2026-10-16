@@ -1,0 +1,16 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+db.sqlite3
+.env
+staticfiles/
+.env.example
+.env.prod
+deploy/
+actions-runner/
+on-call-engineer/runs/
+on-call-engineer/state.json
+on-call-engineer/state.json.tmp
+on-call-engineer/oncall.env
+observability-deploy/

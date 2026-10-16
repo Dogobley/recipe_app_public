@@ -1,0 +1,42 @@
+{% extends "base.html" %}
+
+{% load presentation %}
+
+{% block title %}Ingredients | Recipe Cost Calculator{% endblock %}
+
+{% block content %}
+  <div class="d-flex flex-wrap justify-content-between align-items-center gap-3 mb-4">
+    <h1 class="mb-0">Ingredients</h1>
+    <a class="btn btn-primary" href="/ingredients/add/">Add ingredient</a>
+  </div>
+
+  {% if ingredients %}
+    <div class="table-responsive">
+      <table class="table table-hover align-middle">
+        <thead>
+          <tr>
+            <th scope="col">Name</th>
+            <th scope="col">Brand</th>
+            <th scope="col">Purchase location</th>
+            <th scope="col">Package weight</th>
+            <th scope="col">Package price</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for ingredient in ingredients %}
+            <tr>
+              <th scope="row"><a href="{% url 'ingredient-detail' ingredient.pk %}">{{ ingredient.name }}</a></th>
+              <td>{{ ingredient.brand }}</td>
+              <td>{{ ingredient.place_of_purchase }}</td>
+              <td>{{ ingredient.package_weight|weight:ingredient.package_weight_unit }}</td>
+              <td>{{ ingredient.package_price|currency }}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  {% else %}
+    <p>No ingredients have been added yet.</p>
+    <a class="btn btn-primary" href="/ingredients/add/">Add ingredient</a>
+  {% endif %}
+{% endblock %}

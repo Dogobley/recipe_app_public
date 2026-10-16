@@ -1,0 +1,113 @@
+{% extends "base.html" %}
+
+{% block title %}{{ page_title }} | Recipes | Recipe Cost Calculator{% endblock %}
+
+{% block content %}
+  <div class="d-flex flex-wrap justify-content-between align-items-center gap-3 mb-4">
+    <h1 class="mb-0">{{ page_title }}</h1>
+    <a class="btn btn-outline-secondary" href="{% url 'recipe-list' %}">Cancel</a>
+  </div>
+
+  <form method="post" novalidate>
+    {% csrf_token %}
+    {% include "includes/form_errors.html" with form=form %}
+    <div class="row g-3 mb-4">
+      {% for field in form %}
+        <div class="col-12{% if field.name == 'weight_per_unit' %} col-md-6{% endif %}">
+          <label class="form-label" for="{{ field.id_for_label }}">{{ field.label }} <span aria-hidden="true">*</span><span class="visually-hidden"> (required)</span></label>
+          {{ field }}
+          {% include "includes/form_errors.html" with form=form field=field %}
+        </div>
+      {% endfor %}
+    </div>
+
+    <fieldset class="border rounded p-3">
+      <legend class="float-none w-auto px-2 h3">Ingredients</legend>
+      {{ formset.management_form }}
+      {% if formset.non_form_errors %}
+        <div class="alert alert-danger" role="alert" aria-labelledby="ingredient-formset-errors">
+          <h2 class="h6" id="ingredient-formset-errors">Please correct the ingredient rows below.</h2>
+          {{ formset.non_form_errors }}
+        </div>
+      {% endif %}
+      <div id="ingredient-rows" class="vstack gap-3">
+        {% for ingredient_form in formset %}
+          <div class="recipe-ingredient-row border rounded p-3">
+            {% for hidden in ingredient_form.hidden_fields %}{{ hidden }}{% endfor %}
+            <div class="row g-3 align-items-end">
+              {% for field in ingredient_form.visible_fields %}
+                {% if field.name != 'DELETE' %}
+                  <div class="col-12 col-md-4">
+                    <label class="form-label" for="{{ field.id_for_label }}">{{ field.label }} <span aria-hidden="true">*</span><span class="visually-hidden"> (required)</span></label>
+                    {{ field }}
+                    {% include "includes/form_errors.html" with form=ingredient_form field=field %}
+                  </div>
+                {% endif %}
+              {% endfor %}
+              <div class="col-12 col-md-auto">
+                <label class="visually-hidden" for="{{ ingredient_form.DELETE.id_for_label }}">Remove ingredient row</label>
+                {{ ingredient_form.DELETE }}
+                <button class="btn btn-outline-danger" type="button" data-remove-row>Remove row</button>
+              </div>
+            </div>
+          </div>
+        {% endfor %}
+      </div>
+      <template id="empty-ingredient-form">
+        <div class="recipe-ingredient-row border rounded p-3">
+          {% for hidden in formset.empty_form.hidden_fields %}{{ hidden }}{% endfor %}
+          <div class="row g-3 align-items-end">
+            {% for field in formset.empty_form.visible_fields %}
+              {% if field.name != 'DELETE' %}
+                <div class="col-12 col-md-4">
+                  <label class="form-label" for="{{ field.id_for_label }}">{{ field.label }} <span aria-hidden="true">*</span><span class="visually-hidden"> (required)</span></label>
+                  {{ field }}
+                </div>
+              {% endif %}
+            {% endfor %}
+            <div class="col-12 col-md-auto">
+              {{ formset.empty_form.DELETE }}
+              <button class="btn btn-outline-danger" type="button" data-remove-row>Remove row</button>
+            </div>
+          </div>
+        </div>
+      </template>
+      <button id="add-ingredient-row" class="btn btn-outline-primary mt-3" type="button">Add ingredient row</button>
+    </fieldset>
+
+    <div class="mt-4 d-flex flex-wrap gap-2">
+      <button class="btn btn-primary" type="submit">{{ submit_label }}</button>
+      <a class="btn btn-outline-secondary" href="{% url 'recipe-list' %}">Cancel</a>
+    </div>
+  </form>
+{% endblock %}
+
+{% block extra_scripts %}
+  <script>
+    (() => {
+      const rows = document.querySelector("#ingredient-rows");
+      const totalForms = document.querySelector("#id_ingredients-TOTAL_FORMS");
+      const template = document.querySelector("#empty-ingredient-form");
+      document.querySelector("#add-ingredient-row").addEventListener("click", () => {
+        const index = totalForms.value;
+        const content = template.content.cloneNode(true);
+        content.querySelectorAll("[name], [id], label[for]").forEach((element) => {
+          ["name", "id", "for"].forEach((attribute) => {
+            if (element.hasAttribute(attribute)) {
+              element.setAttribute(attribute, element.getAttribute(attribute).replace(/__prefix__/g, index));
+            }
+          });
+        });
+        rows.append(content);
+        totalForms.value = Number(index) + 1;
+      });
+      rows.addEventListener("click", (event) => {
+        const button = event.target.closest("[data-remove-row]");
+        if (!button) return;
+        const row = button.closest(".recipe-ingredient-row");
+        row.querySelector('input[name$="-DELETE"]').checked = true;
+        row.hidden = true;
+      });
+    })();
+  </script>
+{% endblock %}

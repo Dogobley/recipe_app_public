@@ -1,0 +1,33 @@
+{% extends "base.html" %}
+
+{% load presentation %}
+
+{% block title %}{{ ingredient.name }} | Ingredients | Recipe Cost Calculator{% endblock %}
+
+{% block content %}
+  <div class="d-flex flex-wrap justify-content-between align-items-center gap-3 mb-4">
+    <h1 class="mb-0">{{ ingredient.name }}</h1>
+    <div class="d-flex flex-wrap gap-2">
+      <a class="btn btn-outline-secondary" href="{% url 'ingredient-list' %}">Back to ingredients</a>
+      <a class="btn btn-primary" href="{% url 'ingredient-edit' ingredient.pk %}">Edit ingredient</a>
+      <a class="btn btn-outline-danger" href="{% url 'ingredient-delete' ingredient.pk %}">Delete ingredient</a>
+    </div>
+  </div>
+
+  <dl class="row">
+    <dt class="col-sm-4">Name</dt>
+    <dd class="col-sm-8">{{ ingredient.name }}</dd>
+
+    <dt class="col-sm-4">Brand</dt>
+    <dd class="col-sm-8">{{ ingredient.brand }}</dd>
+
+    <dt class="col-sm-4">Purchase location</dt>
+    <dd class="col-sm-8">{{ ingredient.place_of_purchase }}</dd>
+
+    <dt class="col-sm-4">Package weight</dt>
+    <dd class="col-sm-8">{{ ingredient.package_weight|weight:ingredient.package_weight_unit }}</dd>
+
+    <dt class="col-sm-4">Package price</dt>
+    <dd class="col-sm-8">{{ ingredient.package_price|currency }}</dd>
+  </dl>
+{% endblock %}
