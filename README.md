@@ -2,6 +2,33 @@
 
 An in-progress Django application for calculating confectionery recipe costs.
 
+## Quick start
+
+Prerequisite: Docker with Compose v2 (for example Docker Desktop), running.
+Nothing else needs to be installed, created or edited.
+
+From the repository root of a fresh clone, start the Django web service and
+PostgreSQL with one command:
+
+```shell
+docker compose --env-file quickstart.env up --build --detach
+```
+
+Then open <http://localhost:8080/>. `docker compose --env-file quickstart.env ps`
+shows `db` and `web` as `healthy` once the application is ready.
+
+- **Stop it** (your data is kept for the next `up`):
+  `docker compose --env-file quickstart.env down`
+- **Wipe its data** (removes the quick-start database volume):
+  `docker compose --env-file quickstart.env down -v`
+
+The quick start runs as its own Compose project,
+`recipe-cost-calculator-quickstart`, on port `8080`, so it never touches a dev
+or production deployment on the same host. `quickstart.env` is for local
+evaluation only: its values, including the secret key and database password,
+are public. It is **not for deployments**; dev and production use `.env` and
+`.env.prod`, as described in the [operator guide](docs/operator-guide.md).
+
 ## Operations
 
 For clean checkout setup, production configuration, backups, restores, updates,
@@ -28,10 +55,35 @@ onto a Docker host that serves dev on port `8000` and production on port
 last `-`. There is a single branch, `main`, and every deployment runs a release
 with the `compose.yaml` from the commit that built it.
 
+- **CI** ([.github/workflows/ci.yml](.github/workflows/ci.yml)) — runs the
+  whole automated test suite on GitHub-hosted `ubuntu-latest` runners with
+  Python 3.13 and dependencies from `requirements.txt` only. It needs no
+  secret, no repository variable and no machine of ours, and grants only
+  `contents: read`. It has two jobs:
+  - **tests** runs `python -m pytest` against a PostgreSQL 17 service
+    container. The job sets `CI_EXPECTED_DATABASE_VENDOR=postgresql`, so
+    [`tests/test_ci_database.py`](tests/test_ci_database.py) fails the run if
+    the suite did not really use PostgreSQL.
+  - **integration** installs Chromium with
+    `python -m playwright install --with-deps chromium`, then runs
+    `python -m pytest -m compose` and `python -m pytest e2e` against an
+    isolated Compose stack it builds and removes itself.
+
+  It runs on every pull request; the result appears as the **CI / tests** and
+  **CI / integration** checks at the bottom of the pull request's
+  **Conversation** tab and in its **Checks** tab. It can also be run by hand
+  (**Actions → CI → Run workflow**). A failing test, a failed install or a
+  PostgreSQL service that never becomes healthy fails the run.
 - **Build** ([.github/workflows/build.yml](.github/workflows/build.yml)) — on
-  every push to `main`, builds the image on the self-hosted runner, pushes it
-  to the local registry with the timestamp tag and the `dev` tag, then
-  deploys it to the dev environment.
+  every push to `main`, first runs the CI workflow (its `ci / tests` and
+  `ci / integration` jobs; CI has no push trigger of its own, so the tests run
+  once per push). Only after they pass does it build the image on the
+  self-hosted runner, push it to the local registry with the timestamp tag and
+  the `dev` tag, then deploy it to the dev environment. A failing test stops
+  the push there: no image is built and dev is not touched. The build and dev
+  deploy run only when the `SELF_HOSTED_RUNNER` repository variable is `true`;
+  otherwise they show as skipped (see
+  [Required repository configuration](#required-repository-configuration)).
 - **Deploy** ([.github/workflows/deploy.yml](.github/workflows/deploy.yml)) —
   runs on the self-hosted runner. Given a release tag, it checks out the commit
   named by the tag, pulls that image, and serves it with that commit's
@@ -59,9 +111,9 @@ with the `compose.yaml` from the commit that built it.
    **Settings → Actions → Runners** (status `Idle`).
 
 2. **Dev (automatic)** — push to `main`. The **Build and push** workflow runs
-   on every push: it builds the image, tags it with a
-   `YYYYMMDD-HHMMSS-shortsha` tag plus `dev`, pushes both to the local
-   registry, then deploys to the dev environment.
+   on every push: it runs the CI tests, and once they pass it builds the
+   image, tags it with a `YYYYMMDD-HHMMSS-shortsha` tag plus `dev`, pushes
+   both to the local registry, then deploys to the dev environment.
 
 3. **Dev or prod (manual, also rollback)** — **Actions → Deploy → Run
    workflow**, choose the **environment** (`dev` or `prod`) and enter a
@@ -95,12 +147,58 @@ curl http://localhost:8001/health/   # production
 | `DEPLOY_PATH` | Variable | Directory on this machine holding `compose.yaml` and the `.env`/`.env.prod` files, e.g. `C:/Users/.../ai_dev_project/deploy`. |
 | `REGISTRY_USERNAME` | Secret | Registry login user (omit for an unauthenticated registry). |
 | `REGISTRY_PASSWORD` | Secret | Registry login password (omit for an unauthenticated registry). |
+| `SELF_HOSTED_RUNNER` | Variable | Set to `true` only on a repository that has the self-hosted runner below. It enables the automatically triggered self-hosted jobs: the build and dev deploy in **Build and push**, and **Deploy observability**. Unset or any other value, those jobs show as skipped instead of waiting for a runner; the CI tests still run. |
 
-All three workflows run on a **self-hosted runner** installed on this machine
+The CI workflow needs none of these and runs on GitHub-hosted runners. The
+Build and push, Deploy, Promote dev to production and Deploy observability
+workflows run on a **self-hosted runner** installed on this machine
 (Settings → Actions → Runners → New self-hosted runner, Windows): they must run
 locally because the registry lives at `localhost:5000`. The machine needs
 Docker Desktop running, a local registry container, Git Bash, and a `.env`
-(dev) plus `.env.prod` (production) file in `DEPLOY_PATH`.
+(dev) plus `.env.prod` (production) file in `DEPLOY_PATH`. On a repository
+without that runner, such as a public fork, leave `SELF_HOSTED_RUNNER` unset:
+pushes to `main` then run only the tests. The manual Deploy and Promote dev to
+production workflows are not gated by the variable and always need the runner.
+
+### Running the CI checks locally
+
+The CI jobs run these commands, from the repository root with the virtual
+environment active (see [Direct Python setup](#direct-python-setup)):
+
+```powershell
+python -m pip install -r requirements.txt
+python -m pytest                                      # tests job
+python -m playwright install --with-deps chromium     # integration job
+python -m pytest -m compose
+python -m pytest e2e
+```
+
+Without database variables, `python -m pytest` uses the SQLite fallback. To
+run it against PostgreSQL the way the **tests** job does, start a throwaway
+PostgreSQL 17 container and point Django at it with the same variables the
+job sets (the `DJANGO_DB_*` variables select PostgreSQL in
+[`config/settings.py`](config/settings.py); pytest-django creates and drops
+its own `test_calculator` database). If port `5432` is taken, publish another
+host port and set `DJANGO_DB_PORT` to it:
+
+```powershell
+docker run --detach --name recipe-ci-postgres --publish 127.0.0.1:5432:5432 `
+  --env POSTGRES_DB=calculator --env POSTGRES_USER=calculator `
+  --env POSTGRES_PASSWORD=calculator postgres:17-alpine
+$env:DJANGO_DB_ENGINE = "django.db.backends.postgresql"
+$env:DJANGO_DB_NAME = "calculator"
+$env:DJANGO_DB_USER = "calculator"
+$env:DJANGO_DB_PASSWORD = "calculator"
+$env:DJANGO_DB_HOST = "127.0.0.1"
+$env:DJANGO_DB_PORT = "5432"
+$env:CI_EXPECTED_DATABASE_VENDOR = "postgresql"
+python -m pytest
+docker rm --force --volumes recipe-ci-postgres
+```
+
+`--with-deps` also installs the system libraries Chromium needs on Linux (it
+uses `sudo` there); on a Windows or macOS workstation
+`python -m playwright install chromium` is enough.
 
 ## Requirements
 
@@ -228,6 +326,9 @@ Run the automated tests:
 ```powershell
 python -m pytest
 ```
+
+To run them against PostgreSQL the way CI does, see
+[Running the CI checks locally](#running-the-ci-checks-locally).
 
 Run the integration tests against the Compose deployment. They need Docker
 running, build an isolated copy of the stack on a free port, and remove it

@@ -5,7 +5,6 @@ __pycache__/
 db.sqlite3
 .env
 staticfiles/
-.env.example
 .env.prod
 deploy/
 actions-runner/

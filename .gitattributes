@@ -1,3 +1,9 @@
 # Shell scripts run inside the Linux container; keep LF line endings on every
 # OS so the shebang interpreter resolves correctly (CRLF breaks `docker build`).
 *.sh text eol=lf
+
+# Env files are read by Compose and other env-file parsers; keep LF endings so
+# a Windows checkout parses the same as Linux and macOS, with no carriage
+# return left at the end of any value.
+quickstart.env text eol=lf
+.env.example text eol=lf

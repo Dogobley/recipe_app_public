@@ -16,6 +16,31 @@ The commands use the exact service names and paths from this repository.
 Commands specifically labelled **environment-specific example** additionally
 contain a value that must be replaced before use.
 
+## Quick start for local evaluation
+
+To try the application without configuring a deployment, run this from the
+repository root of a fresh clone; it needs no `.env` and no edits:
+
+```powershell
+docker compose --env-file quickstart.env up --build --detach
+docker compose --env-file quickstart.env ps
+(Invoke-WebRequest http://localhost:8080/health/).StatusCode
+```
+
+Open `http://localhost:8080/`. Stop it with
+`docker compose --env-file quickstart.env down` (data is kept), and wipe its
+database with `docker compose --env-file quickstart.env down -v`.
+
+`quickstart.env` is for local evaluation only. Its values, including the secret
+key and database password, are committed and public, so it must never be used
+for a deployment or for data you need to keep private. It runs as its own
+Compose project, `recipe-cost-calculator-quickstart`, with its own containers,
+network, image and `recipe-cost-calculator-quickstart_postgres_data` volume on
+port `8080`, so starting or removing it never changes dev or production. The dev
+and production deployments keep using `.env` and `.env.prod`, as described in
+the rest of this guide; every other `docker compose` command here targets them,
+not the quick start.
+
 ## Prerequisites and first local deployment
 
 Install Git and Docker Desktop with Docker Compose v2, start Docker Desktop,
@@ -139,6 +164,10 @@ its own Compose project, so containers, network, built image, and the
 | Database volume | `ai_dev_project_postgres_data` | `recipe-cost-calculator-prod_postgres_data` |
 | Command prefix | `docker compose` | `docker compose --env-file .env.prod` |
 
+The [quick start](#quick-start-for-local-evaluation) is not one of these
+environments: `quickstart.env` is for local evaluation only, and dev and
+production never read it.
+
 Every `docker compose` command in this guide targets **dev** as written, except
 in [Backup](#backup) and [Restore](#restore), which target production. To
 run it against **production**, add `--env-file .env.prod` directly after
@@ -183,8 +212,24 @@ The first command is dev, the second production. The run summary of the
 latest **Promote dev to production** run also shows the release and commit
 promoted to production.
 
-**Release to dev.** Push to `main`. Build creates the release tag and deploys
-it to dev with the `compose.yaml` of the pushed commit.
+**Release to dev.** Push to `main`. **Build and push** first runs the CI
+workflow ([`.github/workflows/ci.yml`](../.github/workflows/ci.yml)): its
+`ci / tests` job runs `python -m pytest` against PostgreSQL 17 and its
+`ci / integration` job runs `python -m pytest -m compose` and
+`python -m pytest e2e`, both on GitHub-hosted runners. Only after both pass
+does Build create the release tag, build and push the image on the self-hosted
+runner, and deploy it to dev with the `compose.yaml` of the pushed commit. A
+failing test stops the run before the build: no image is pushed and dev keeps
+running its current release. The same CI workflow runs on every pull request,
+so a change can be checked before it reaches `main`.
+
+The build and dev deploy run only when the repository variable
+`SELF_HOSTED_RUNNER` is `true` (**Settings -> Secrets and variables ->
+Actions -> Variables**). Set it on the repository that has this host's
+self-hosted runner. Unset or any other value, those jobs, and **Deploy
+observability**, show as skipped and nothing waits for a runner; the tests
+still run. The manual **Deploy** and **Promote dev to production** workflows
+do not read the variable.
 
 **Promote to production.**
 
@@ -270,7 +315,10 @@ production reach the collector only through
    otherwise change the value, and the workflow refuses it.
 
 **Deploy or update.** **Actions -> Deploy observability -> Run workflow**. It
-also runs on a push to `main` that changes `observability/`. It copies the
+also runs on a push to `main` that changes `observability/`. Either way its
+job runs only when the repository variable `SELF_HOSTED_RUNNER` is `true`;
+otherwise it shows as skipped (see
+[Releasing and rolling back](#releasing-and-rolling-back)). It copies the
 stack's files from that commit to `OBSERVABILITY_PATH`, runs
 `docker compose --project-name observability up -d` there (reusing the existing
 volumes), restarts only services whose config file changed, and is green only
@@ -475,7 +523,11 @@ The first two commands are **environment-specific examples**: they assume an
 activated Python 3.13 virtual environment and the database configuration
 required by the test suite. The image rebuild validates that the container uses
 the same `requirements.txt`; deploy it through the update procedure only after
-the full suite passes.
+the full suite passes. The CI workflow runs the same install and the whole
+suite, against PostgreSQL, on every pull request and before every build from
+`main`; the README's
+[Running the CI checks locally](../README.md#running-the-ci-checks-locally)
+shows how to point `python -m pytest` at a PostgreSQL database.
 
 ## Troubleshooting
 

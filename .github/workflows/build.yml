@@ -9,7 +9,18 @@ permissions:
   contents: read
 
 jobs:
+  # The whole test suite (ci.yml) runs first, on GitHub-hosted runners. ci.yml
+  # has no push trigger of its own, so this is the only run of the tests for a
+  # push to main, and nothing is built or deployed unless it passes.
+  ci:
+    uses: ./.github/workflows/ci.yml
+
   build:
+    needs: ci
+    # Only a repository that has opted in to a self-hosted runner builds and
+    # deploys; elsewhere (such as a public fork) this job and deploy-dev show
+    # as skipped instead of waiting for a runner that never comes.
+    if: vars.SELF_HOSTED_RUNNER == 'true'
     # Runs on this machine so it can push to the local registry at
     # localhost:5000 (a GitHub-hosted runner cannot reach it).
     runs-on: self-hosted
@@ -56,6 +67,7 @@ jobs:
 
   deploy-dev:
     needs: build
+    if: vars.SELF_HOSTED_RUNNER == 'true'
     uses: ./.github/workflows/deploy.yml
     with:
       environment: dev

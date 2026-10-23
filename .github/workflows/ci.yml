@@ -1,0 +1,94 @@
+name: CI
+
+# Runs the whole automated test suite on GitHub-hosted runners, so the result
+# is visible on GitHub without any machine of ours.
+#
+# There is deliberately no `push` trigger: on a push to `main`, the Build and
+# push workflow (build.yml) calls this workflow as its first job, so the tests
+# run exactly once for that push and gate the build and the dev deploy.
+on:
+  pull_request:
+  workflow_call:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    name: tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_DB: calculator
+          POSTGRES_USER: calculator
+          POSTGRES_PASSWORD: calculator
+        ports:
+          - 5432:5432
+        # The job starts only once PostgreSQL accepts connections; a service
+        # that never becomes healthy fails the job.
+        options: >-
+          --health-cmd "pg_isready --username calculator --dbname calculator"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      # Select PostgreSQL in config/settings.py instead of the SQLite fallback.
+      # pytest-django creates and drops its own `test_calculator` database.
+      DJANGO_DB_ENGINE: django.db.backends.postgresql
+      DJANGO_DB_NAME: calculator
+      DJANGO_DB_USER: calculator
+      DJANGO_DB_PASSWORD: calculator
+      DJANGO_DB_HOST: 127.0.0.1
+      DJANGO_DB_PORT: "5432"
+      # tests/test_ci_database.py fails the run unless the suite really used
+      # this database vendor.
+      CI_EXPECTED_DATABASE_VENDOR: postgresql
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt
+
+      - name: Run the test suite against PostgreSQL
+        run: python -m pytest
+
+  integration:
+    name: integration
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt
+
+      - name: Install Chromium for Playwright
+        run: python -m playwright install --with-deps chromium
+
+      # Builds compose.yaml and drives an isolated copy of the stack on a free
+      # loopback port; it generates its own env file, so no secret is needed.
+      - name: Run the Docker Compose integration tests
+        run: python -m pytest -m compose
+
+      - name: Run the browser end-to-end tests
+        run: python -m pytest e2e

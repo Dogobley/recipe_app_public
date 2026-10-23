@@ -22,6 +22,9 @@ jobs:
     # (`observability`); this workflow never touches the dev or prod
     # application containers.
     runs-on: self-hosted
+    # Only a repository that has opted in to a self-hosted runner deploys;
+    # elsewhere the job shows as skipped instead of waiting for a runner.
+    if: vars.SELF_HOSTED_RUNNER == 'true'
     steps:
       - name: Check out the commit being deployed
         uses: actions/checkout@v4

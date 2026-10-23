@@ -27,6 +27,16 @@ def health(request):
     return HttpResponse("OK", content_type="text/plain")
 
 
+def collected_static(request, path):
+    """Serve a collected static file from the current ``STATIC_ROOT``.
+
+    The setting is read on every request rather than bound when this module is
+    imported, so the container serves whatever ``collectstatic`` wrote to
+    ``STATIC_ROOT`` and an overridden setting takes effect immediately.
+    """
+    return serve(request, path, document_root=settings.STATIC_ROOT)
+
+
 urlpatterns = [
     path("", home, name="home"),
     path("health/", health, name="health"),
@@ -40,5 +50,5 @@ urlpatterns = [
     path("calculator/", views.recipe_calculator, name="recipe-calculator"),
     # The web container owns static delivery; no separate frontend service is
     # required for this deliberately small deployment.
-    re_path(r"^static/(?P<path>.*)$", serve, {"document_root": settings.STATIC_ROOT}),
+    re_path(r"^static/(?P<path>.*)$", collected_static),
 ]

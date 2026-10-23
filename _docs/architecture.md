@@ -181,7 +181,7 @@ pytest and pytest-django cover the system at several levels:
 - View tests for responses, redirects, permissions implied by HTTP methods, and displayed results
 - Integration tests for the complete ingredient-to-recipe-to-calculation workflow
 
-The test suite uses a PostgreSQL test database so database behavior matches production.
+The test suite uses a PostgreSQL test database so database behavior matches production. Without the `DJANGO_DB_*` variables a local run falls back to SQLite; CI always runs it against PostgreSQL.
 
 ## Deployment
 
@@ -191,6 +191,10 @@ Docker Compose runs two primary services:
 - `db`: PostgreSQL with a persistent volume
 
 Two environments run from the same `compose.yaml` on one host: dev (`.env`, Compose project named after the deploy folder, port 8000) and production (`.env.prod`, project `recipe-cost-calculator-prod`, port 8001). They are separate Compose projects with their own containers, network and database volume, and differ only in their env files; `.env.prod.example` is the production template. There is one branch, `main`. Each image is built once and tagged `YYYYMMDD-HHMMSS-shortsha`; every deployment checks out the commit named by that tag and uses its `compose.yaml`, and promotion to production retags the release dev is running instead of rebuilding.
+
+Continuous integration runs on GitHub-hosted `ubuntu-latest` runners with no secrets: the **CI** workflow (`.github/workflows/ci.yml`) runs `python -m pytest` against a PostgreSQL 17 service container (**tests**) and `python -m pytest -m compose` plus `python -m pytest e2e` (**integration**). It runs on every pull request and has no push trigger; on a push to `main`, **Build and push** (`build.yml`) calls it as its first job, so the tests run once per push and the image build and dev deploy on the self-hosted runner start only after they pass. The automatically triggered self-hosted jobs (the build and dev deploy, and **Deploy observability**) run only when the repository variable `SELF_HOSTED_RUNNER` is `true`; on a repository without the runner they are skipped. The manual Deploy and Promote dev to production workflows are not gated.
+
+For local evaluation, the same `compose.yaml` also starts from a fresh clone with the tracked, public `quickstart.env` (`docker compose --env-file quickstart.env up --build --detach`): Compose project `recipe-cost-calculator-quickstart`, port 8080, with its own containers, network and database volume. It is not a deployment environment; dev and production never read it.
 
 Configuration and secrets come from environment variables. Container startup applies the expected deployment checks, static assets are collected for production, and the application exposes a lightweight health endpoint suitable for container health checks.
 

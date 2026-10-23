@@ -52,6 +52,25 @@ def test_collected_static_asset_is_served_by_the_application(tmp_path, settings)
     assert response["Content-Type"].startswith("text/css")
 
 
+@pytest.mark.django_db
+def test_static_files_come_from_the_current_static_root_after_the_url_conf_is_loaded(tmp_path, settings) -> None:
+    # Load the URL configuration first, as an earlier test or a running server
+    # would; STATIC_ROOT must still be read when each file is requested.
+    assert Client().get("/health/").status_code == 200
+    settings.DEBUG = False
+    settings.STATIC_ROOT = tmp_path / "collected"
+    (settings.STATIC_ROOT / "calculator").mkdir(parents=True)
+    (settings.STATIC_ROOT / "calculator" / "probe.css").write_bytes(b"body { color: black; }")
+
+    served = Client().get("/static/calculator/probe.css")
+    # A source file that collectstatic has not copied into STATIC_ROOT is not served.
+    not_collected = Client().get("/static/calculator/site.css")
+
+    assert served.status_code == 200
+    assert b"".join(served.streaming_content) == b"body { color: black; }"
+    assert not_collected.status_code == 404
+
+
 def test_production_settings_reject_a_missing_secret(monkeypatch) -> None:
     configure_production_environment(monkeypatch)
     monkeypatch.delenv("DJANGO_SECRET_KEY", raising=False)
