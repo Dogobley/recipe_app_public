@@ -153,7 +153,9 @@ The CI workflow needs none of these and runs on GitHub-hosted runners. The
 Build and push, Deploy, Promote dev to production and Deploy observability
 workflows run on a **self-hosted runner** installed on this machine
 (Settings → Actions → Runners → New self-hosted runner, Windows): they must run
-locally because the registry lives at `localhost:5000`. The machine needs
+locally because the registry lives at `localhost:5000`. The runner must be
+version 2.327.1 or later: the workflows use `actions/checkout@v7`, a Node.js 24
+action, and older runners cannot run Node.js 24 actions. The machine needs
 Docker Desktop running, a local registry container, Git Bash, and a `.env`
 (dev) plus `.env.prod` (production) file in `DEPLOY_PATH`. On a repository
 without that runner, such as a public fork, leave `SELF_HOSTED_RUNNER` unset:

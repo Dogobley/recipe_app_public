@@ -27,7 +27,7 @@ jobs:
     if: vars.SELF_HOSTED_RUNNER == 'true'
     steps:
       - name: Check out the commit being deployed
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       # Everything below that can fail on configuration runs before any file in
       # the deploy folder or any container changes.

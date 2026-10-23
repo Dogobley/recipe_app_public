@@ -387,6 +387,97 @@ def test_manual_deploy_and_promote_workflows_are_not_gated(workflow) -> None:
         assert "if" not in job
 
 
+# --- Node.js 24 action versions ----------------------------------------------
+
+# The first majors of these actions that run on Node.js 24 instead of the
+# deprecated Node.js 20.
+NODE24_ACTIONS = ("actions/checkout", "actions/setup-python")
+NODE24_MINIMUM_MAJOR = 7
+NODE24_ACTION_MENTION = re.compile(r"actions/(?:checkout|setup-python)\b[^\s'\"#]*")
+
+
+def step_actions(workflow: dict) -> list[str]:
+    return [
+        step["uses"]
+        for job in workflow["jobs"].values()
+        for step in job.get("steps", [])
+        if "uses" in step
+    ]
+
+
+def targets_node20(reference: str) -> bool:
+    """True when a checkout or setup-python reference is not a v7-or-later tag.
+
+    A ref without a `vN` major, such as a branch or commit SHA, also counts:
+    nothing proves it runs on Node.js 24.
+    """
+    action, _, ref = reference.partition("@")
+    assert action in NODE24_ACTIONS, reference
+    major = re.fullmatch(r"v(\d+)(\.\d+){0,2}", ref)
+    return major is None or int(major[1]) < NODE24_MINIMUM_MAJOR
+
+
+@pytest.mark.parametrize(
+    ("reference", "outdated"),
+    [
+        ("actions/checkout@v4", True),
+        ("actions/checkout@v6", True),
+        ("actions/setup-python@v5", True),
+        ("actions/setup-python@v6.1.0", True),
+        ("actions/checkout@main", True),
+        ("actions/checkout", True),
+        ("actions/checkout@v7", False),
+        ("actions/checkout@v7.0.0", False),
+        ("actions/setup-python@v7", False),
+        ("actions/setup-python@v8", False),
+    ],
+)
+def test_version_check_flags_checkout_and_setup_python_below_major_7(reference, outdated) -> None:
+    assert targets_node20(reference) is outdated
+
+
+def test_no_workflow_uses_checkout_or_setup_python_below_major_7() -> None:
+    for name in all_workflows():
+        text = (WORKFLOWS / name).read_text(encoding="utf-8")
+        mentions = NODE24_ACTION_MENTION.findall(text)
+        outdated = [reference for reference in mentions if targets_node20(reference)]
+        assert outdated == [], name
+
+
+def test_workflow_action_references_are_exactly_the_node24_checkout_and_setup_python() -> None:
+    checkout, setup_python = "actions/checkout@v7", "actions/setup-python@v7"
+
+    assert {name: step_actions(workflow) for name, workflow in all_workflows().items()} == {
+        "build.yml": [checkout],
+        "ci.yml": [checkout, setup_python, checkout, setup_python],
+        "deploy-observability.yml": [checkout],
+        "deploy.yml": [checkout],
+        "promote-to-production.yml": [],
+    }
+    # Every reference the text mentions is one of those parsed steps.
+    for name, workflow in all_workflows().items():
+        text = (WORKFLOWS / name).read_text(encoding="utf-8")
+        assert NODE24_ACTION_MENTION.findall(text) == step_actions(workflow), name
+
+
+def test_setup_python_keeps_its_python_pip_cache_and_requirements_inputs() -> None:
+    for name, job in load("ci.yml")["jobs"].items():
+        setup = [step for step in job["steps"] if step.get("uses", "").startswith("actions/setup-python@")]
+        assert [step["with"] for step in setup] == [
+            {"python-version": "3.13", "cache": "pip", "cache-dependency-path": "requirements.txt"}
+        ], name
+        checkout = [step for step in job["steps"] if step.get("uses", "").startswith("actions/checkout@")]
+        assert len(checkout) == 1 and "with" not in checkout[0], name
+
+
+def test_readme_requires_a_self_hosted_runner_that_can_run_node24_actions() -> None:
+    readme = (PROJECT_ROOT / "README.md").read_text(encoding="utf-8")
+    ci_section = " ".join(readme.split("## CI/CD", 1)[1].split("\n## ", 1)[0].split())
+
+    assert "runner must be version 2.327.1 or later" in ci_section
+    assert "Node.js 24" in ci_section
+
+
 # --- Documentation -----------------------------------------------------------
 
 

@@ -35,7 +35,7 @@ jobs:
       # that commit's compose.yaml is the one deployed. Full history is fetched
       # so any release's short SHA can be resolved.
       - name: Check out the repository history
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
