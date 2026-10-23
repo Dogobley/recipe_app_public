@@ -1,6 +1,15 @@
 # Recipe Cost Calculator
 
-An in-progress Django application for calculating confectionery recipe costs.
+Recipe Cost Calculator is a web application for a small confectionery producer
+who prices their own recipes. It answers two questions: what does one unit of a
+recipe cost, and what does a batch of N units cost?
+
+You enter each ingredient once, with the price and weight of the package you
+buy. You then enter each recipe with the quantity of every ingredient it uses
+for one unit. The application converts kilograms to grams and does the
+arithmetic, so you do not need a spreadsheet and you avoid unit-conversion
+mistakes. It is a Django application backed by PostgreSQL, and prices are in
+Colombian pesos (COP).
 
 ## Quick start
 
@@ -28,6 +37,145 @@ or production deployment on the same host. `quickstart.env` is for local
 evaluation only: its values, including the secret key and database password,
 are public. It is **not for deployments**; dev and production use `.env` and
 `.env.prod`, as described in the [operator guide](docs/operator-guide.md).
+
+## Features
+
+The navigation bar on every page links to **Ingredients**, **Recipes** and
+**Calculator**. The home page is at `/`. After a successful add, edit or
+delete, the application redirects and shows a status message, such as
+"Ingredient added successfully."
+
+### Ingredients
+
+An ingredient is something you buy, described by its package.
+
+| Page | URL | What you can do |
+| --- | --- | --- |
+| List | `/ingredients/` | See every ingredient with its brand, purchase location, package weight and package price. |
+| Add | `/ingredients/add/` | Enter the name, brand, purchase location, package weight, package unit (`g` or `kg`) and package price. |
+| Detail | `/ingredients/<id>/` | See one ingredient, with buttons to edit or delete it. |
+| Edit | `/ingredients/<id>/edit/` | Change any of the fields. Recipes that use the ingredient use the new price in their next calculation. |
+| Delete | `/ingredients/<id>/delete/` | Confirm the deletion. It is blocked while any recipe uses the ingredient: you return to the detail page with the message "Ingredient *name* cannot be deleted because it is used by a recipe." |
+
+### Recipes
+
+A recipe is one unit of a product you make, such as one truffle.
+
+| Page | URL | What you can do |
+| --- | --- | --- |
+| List | `/recipes/` | See every recipe with its weight per unit. |
+| Add | `/recipes/add/` | Enter the name, the weight of one finished unit in grams, and one row per ingredient (ingredient, quantity for one unit, unit `g` or `kg`). **Add ingredient row** and **Remove row** let you use any number of rows. |
+| Detail | `/recipes/<id>/` | See the weight per unit and each ingredient's quantity, with buttons to edit, delete or calculate the recipe. |
+| Edit | `/recipes/<id>/edit/` | Change the name, the weight per unit and the ingredient rows, including adding and removing rows. |
+| Delete | `/recipes/<id>/delete/` | Confirm the deletion. The recipe and its ingredient rows are removed; the ingredients themselves stay. |
+
+A recipe and its ingredient rows are saved together, all or nothing. If any
+row is invalid, nothing is saved, on add and on edit.
+
+### Recipe cost calculator
+
+At `/calculator/`, pick a recipe, enter a whole number of units and press
+**Calculate**. The result appears below the form on the same page. The
+**Calculate recipe** button on a recipe's detail page opens the calculator
+with that recipe already selected (`/calculator/?recipe=<id>`).
+
+### Health endpoint
+
+`/health/` runs a database query. It returns `OK` (HTTP 200, plain text) when
+the query succeeds and `Database unavailable.` (HTTP 500) when it fails. The
+`web` container's health check in `compose.yaml` uses it.
+
+## Expected behaviour
+
+### Calculation rules
+
+- **Grams are the internal unit.** A weight entered in kilograms is converted
+  to grams (multiplied by 1000) before any cost or total is calculated.
+- **Cost per gram** = package price / package weight in grams.
+- **Ingredient cost** = quantity used in grams × cost per gram.
+- **Scaling is linear.** For N units, every ingredient quantity and every
+  ingredient cost is multiplied by N.
+- **The result shows:**
+  - the cost per unit: the ingredient cost of one unit;
+  - the weight per unit: the value saved on the recipe (it is not computed
+    from the ingredients);
+  - for every ingredient, the adjusted quantity (in the unit the recipe uses
+    for it) and its cost;
+  - the total cost: the sum of the adjusted ingredient costs;
+  - the total weight: the sum of the adjusted ingredient weights, in grams.
+- **Exact decimals.** All money and weight arithmetic uses exact decimal
+  numbers, never floating point. Rounding happens only when a value is
+  displayed: money to 2 decimal places (half up), shown as `COP $1234.56`
+  without a thousands separator; weights to 3 decimal places, without trailing
+  zeros.
+- **Calculating changes no stored data.** It saves no result, history or stock
+  movement. Each calculation uses the ingredient prices saved at that moment.
+
+### Worked example
+
+A recipe for **Chocolate truffles** has a weight per unit of `19.5 g` and these
+ingredients. The dark chocolate is bought in `kg` and used in `g`:
+
+| Ingredient | Package weight | Package price | Quantity per unit |
+| --- | --- | --- | --- |
+| Cocoa powder | 250 g | COP $13500.00 | 1.5 g |
+| Dark chocolate 53% | 1 kg | COP $46900.00 | 12 g |
+| Heavy cream | 900 g | COP $17900.00 | 6 g |
+
+The costs per gram are 13500 / 250 = 54 for cocoa powder, 46900 / 1000 = 46.9
+for dark chocolate, and 17900 / 900 = 19.888… for heavy cream.
+
+Calculating **24** units shows this on the calculator page:
+
+| Ingredient | Adjusted quantity | Cost |
+| --- | --- | --- |
+| Cocoa powder | 36 g | COP $1944.00 |
+| Dark chocolate 53% | 288 g | COP $13507.20 |
+| Heavy cream | 144 g | COP $2864.00 |
+
+| Result | Value |
+| --- | --- |
+| Requested units | 24 |
+| Cost per unit | COP $763.13 |
+| Weight per unit | 19.5 g |
+| Total cost | COP $18315.20 |
+| Total weight | 468 g |
+
+The exact cost per unit is COP $763.1333…; it is rounded only for display. That
+is why the total cost is COP $18315.20 and not 24 × COP $763.13 = COP $18315.12.
+The test `tests/test_readme.py` builds this example, runs it through the
+calculation service and the page's formatting, and fails if any figure here
+differs.
+
+### What the application rejects
+
+- Package weight, package price, recipe weight per unit and ingredient
+  quantity must be greater than zero. Weights and quantities take up to 3
+  decimal places (smallest `0.001`), prices up to 2 (smallest `0.01`).
+- A weight unit is `g` or `kg`; nothing else can be chosen.
+- An ingredient needs a name, brand and purchase location. A recipe needs a
+  name and at least one ingredient row ("Add at least one ingredient to the
+  recipe.").
+- An ingredient appears at most once in a recipe ("Each ingredient may only be
+  used once in a recipe.").
+- The calculator needs a recipe and a unit count that is a whole number greater
+  than zero ("Enter a positive whole number."). `0`, `-1` and `1.5` are
+  rejected.
+- Invalid input shows the same form again with your values and a message next
+  to each wrong field (or above the ingredient rows, for the two recipe rules
+  above). Nothing is saved.
+- Opening the detail, edit or delete page of an ingredient or recipe that does
+  not exist returns HTTP 404.
+
+### Out of scope
+
+The application is for one user and one currency (COP). It has:
+
+- no authentication: the ingredient, recipe and calculator pages have no login;
+- no inventory or stock tracking;
+- no labour, packaging or overhead costs (it reports ingredient costs, not sale
+  prices);
+- no multiple currencies.
 
 ## Operations
 
@@ -298,8 +446,7 @@ procedures are documented separately.
 
 ## Direct Python setup
 
-For non-container development, create and activate a virtual environment, then
-install dependencies:
+This setup is for development without containers.
 
 Create and activate a virtual environment, then install dependencies:
 
@@ -349,3 +496,23 @@ python -m pytest e2e
 ```
 
 Set `$env:E2E_HEADED = "1"` first to watch the browser.
+
+## Project map
+
+Where each part of the project is documented or implemented, and how to check
+it.
+
+| Topic | Where | How to check |
+| --- | --- | --- |
+| Problem description | [Intro](#recipe-cost-calculator), [Features](#features), [Expected behaviour](#expected-behaviour) | Read the top of this README; the worked example is checked by `tests/test_readme.py`. |
+| Product specification and task tracker | [`_docs/architecture.md`](_docs/architecture.md), [`_docs/issues/`](_docs/issues/) | Every `issueN.md` has a status line and acceptance criteria. Issues 22 to 31 and 34 also carry an Engineer comment and a QA verdict (Issue 25, a live check, records live runs instead of a QA verdict); Issues 24 to 31 and 34 include the orchestrator's closing comment. Good examples: [`issue29.md`](_docs/issues/issue29.md), [`issue30.md`](_docs/issues/issue30.md), [`issue31.md`](_docs/issues/issue31.md). |
+| Agent team | [`_docs/team/`](_docs/team/), [`_docs/process.md`](_docs/process.md) | The PM, Engineer and QA roles and the orchestrator's lifecycle; [`issue29.md`](_docs/issues/issue29.md) shows an Engineer comment, a QA FAIL, the fix, a QA PASS and the closing. |
+| Context management | [`AGENTS.md`](AGENTS.md), [`_docs/`](_docs/) | `AGENTS.md` tells every agent session which `_docs` files to read first and to record durable rules there. |
+| Application | [`calculator/`](calculator/), [`config/urls.py`](config/urls.py), [`templates/`](templates/) | Run the [Quick start](#quick-start), open `http://localhost:8080/` and enter the [worked example](#worked-example). |
+| Testing | [`tests/`](tests/), [`e2e/`](e2e/), [`_docs/testing-guidelines.md`](_docs/testing-guidelines.md) | Run `python -m pytest` (see [Direct Python setup](#direct-python-setup)); `python -m pytest -m compose` and `python -m pytest e2e` need Docker. |
+| Containerization | [`Dockerfile`](Dockerfile), [`compose.yaml`](compose.yaml), [`quickstart.env`](quickstart.env) | Run the [Quick start](#quick-start); `docker compose --env-file quickstart.env ps` shows `db` and `web` as `healthy`. |
+| Deployment | [`docs/operator-guide.md`](docs/operator-guide.md), [`deploy.yml`](.github/workflows/deploy.yml), [`promote-to-production.yml`](.github/workflows/promote-to-production.yml) | Dev (port `8000`) and production (port `8001`) run on the author's machine through a local self-hosted runner. This public repository has no runner: the jobs gated by `SELF_HOSTED_RUNNER` (the build and dev deploy in **Build and push**, and **Deploy observability**) show as skipped, and the manual **Deploy** and **Promote dev to production** workflows are not gated, so a run would wait for a runner. A recorded demo is still open: [Issue 33](_docs/issues/issue33.md). |
+| CI/CD | [`ci.yml`](.github/workflows/ci.yml), [`build.yml`](.github/workflows/build.yml), [CI/CD](#cicd) | The **CI** workflow runs the whole test suite on every pull request; a push to `main` runs it inside **Build and push**, before the build and dev deploy. Results are in the repository's **Actions** tab. |
+| Observability | [`observability/README.md`](observability/README.md), [`config/telemetry.py`](config/telemetry.py), [`calculator/metrics.py`](calculator/metrics.py), [`recipe-business-metrics.json`](observability/grafana/provisioning/dashboards/recipe-business-metrics.json) | When an OTLP endpoint is set, the application exports OpenTelemetry traces and metrics to the stack. Traces go to Tempo and are viewed in Grafana **Explore**; metrics go to Prometheus and are shown on the provisioned business-metrics dashboard. Structured logs correlated by trace ID are planned and not built yet. |
+| Alerting | [`component-creation-failures.yaml`](observability/grafana/provisioning/alerting/component-creation-failures.yaml), [Creation failure alert](observability/README.md#creation-failure-alert) | The rule fires on repeated recipe or ingredient creation failures; the observability guide has a dev-only live check. |
+| On-call agent | [`on-call-engineer/README.md`](on-call-engineer/README.md), [`issue29.md`](_docs/issues/issue29.md) | The poller hands a firing alert to a headless coding agent on its own branch; the issue's "Live check" records a drill on dev. |
